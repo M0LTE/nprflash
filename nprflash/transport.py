@@ -1,4 +1,4 @@
-"""Serial transport to the NPR-H 3.0 bootloader.
+"""Serial transport to the NPR bootloader.
 
 The bootloader exposes a USB CDC virtual COM port (``0483:5740``) that appears
 **only while the unit is running the bootloader** -- power it from the micro-USB
@@ -117,8 +117,8 @@ class SerialTransport:
     def recv_frame(self) -> bytes:
         """Read up to and including the next delimiter.
 
-        Enforces a deadline, so a device that stops responding raises rather
-        than hanging forever.
+        Unlike the vendor tool's unbounded loop, this enforces a deadline, so a
+        device that stops responding raises instead of hanging forever.
         """
         deadline = time.monotonic() + self.timeout
         buf = bytearray()

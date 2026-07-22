@@ -1,7 +1,7 @@
 """Consistent Overhead Byte Stuffing (Cheshire & Baker).
 
-Implemented here rather than pulled from PyPI so the wire layer is
-self-contained and directly testable against the reference frames in
+Implemented here rather than pulled from PyPI so the wire layer is self-
+contained and testable against the captured device frames in
 tests/fixtures/frames.json.
 
 COBS removes zero bytes from a payload so that 0x00 can be used unambiguously

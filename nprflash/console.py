@@ -22,22 +22,22 @@ Two firmware quirks are handled here, both observed on real hardware:
 
 Three things about the link itself:
 
-  * OPENING THIS PORT RESETS THE UNIT. Every connection produces a fresh
-    bootloader banner, and the bootloader only retries an application ten times
-    before dropping into USB-receive mode. Batch work into ONE connection
-    (--send is repeatable) rather than looping one-shot invocations. The exact
-    mechanism is unproven -- the probe's UART header has no reset line -- but
-    the effect is consistent and costly.
-  * Because of that reset, commands are not sent until the "ready>" prompt
-    appears, or --send-after seconds elapse, whichever comes first.
-  * The probe's CDC-UART bridge only forwards data while the host holds the
-    port open with DTR asserted; --no-dtr yields total silence. It also
-    re-enumerates on USB occasionally, which is survived by reopening.
+  * Data received while nothing holds the port open is BUFFERED and handed over
+    on the next open. Left unhandled that means a capture can report output from
+    a previous session -- including a stale firmware version, which defeats the
+    point of checking. The input buffer is therefore discarded on open, and a
+    banner appearing immediately after connecting should not be read as a boot
+    that the connection caused.
+  * Commands are not sent until the "ready>" prompt appears, or --send-after
+    seconds elapse, so a unit that happens to be mid-boot does not swallow them.
+    An idle unit emits no prompt unprompted; the flushing CR elicits one.
+  * The link only forwards data while the port is held open with DTR asserted;
+    --no-dtr yields total silence. USB re-enumeration is survived by reopening.
 
 Examples:
-    nprflash console --seconds 60                     # catch a boot banner
-    nprflash console --send version --seconds 20      # what is it running?
-    nprflash console --send "display config" --seconds 20
+    nprflash console                                  # watch, until Ctrl-C
+    nprflash console --send version                   # ask, print, exit
+    nprflash console --send "display config"
 """
 
 import argparse
@@ -94,16 +94,24 @@ def add_arguments(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--port", default="auto", help="serial device, or 'auto'")
     ap.add_argument("--baud", type=int, default=921600,
                     help="baud rate (firmware sets 921600 8N1)")
-    ap.add_argument("--seconds", type=float, default=30.0,
-                    help="how long to listen; 0 = until Ctrl-C")
+    ap.add_argument("--seconds", type=float, default=None, metavar="SEC",
+                    help="stop after this many seconds regardless. Default: run "
+                         "until Ctrl-C, or until the reply goes quiet when "
+                         "--send is used")
+    ap.add_argument("--idle", type=float, default=2.0, metavar="SEC",
+                    help="with --send, finish once this much silence has "
+                         "elapsed after the reply (default 2)")
     ap.add_argument("--send", action="append", default=[], metavar="CMD",
                     help="command to send once connected (repeatable)")
     ap.add_argument("--char-delay", type=float, default=0.02, metavar="SEC",
                     help="pause between characters when sending (default 0.02); "
                          "the firmware drops burst-written input")
-    ap.add_argument("--send-after", type=float, default=6.0, metavar="SEC",
+    ap.add_argument("--send-after", type=float, default=5.0, metavar="SEC",
                     help="max wait for the 'ready>' prompt before sending "
-                         "(connecting resets the unit; default 6)")
+                         "anyway (default 5)")
+    ap.add_argument("--reply-timeout", type=float, default=15.0, metavar="SEC",
+                    help="with --send, give up if nothing comes back within "
+                         "this long (default 15)")
     ap.add_argument("--no-flush", action="store_true",
                     help="do not send a leading CR to clear a stale input line")
     ap.add_argument("--no-dtr", action="store_true",
@@ -126,17 +134,34 @@ def run(args) -> int:
     print(f"log    {logpath}")
     if args.send:
         print(f"send   {args.send}")
-    print(f"listen {'until Ctrl-C' if args.seconds == 0 else f'{args.seconds:g}s'}")
+    if args.seconds is not None:
+        listen = f"{args.seconds:g}s"
+    elif args.send:
+        listen = f"until {args.idle:g}s idle after the reply"
+    else:
+        listen = "until Ctrl-C"
+    print(f"listen {listen}")
     print("-" * 60, flush=True)
 
-    deadline = None if args.seconds == 0 else time.monotonic() + args.seconds
+    # A wall-clock limit is a blunt instrument: too short and a late boot
+    # banner is missed, too long and every scripted read stalls. Only apply one
+    # if asked. Otherwise a console runs until interrupted, and a --send
+    # finishes when the device stops talking.
+    deadline = None if args.seconds is None else time.monotonic() + args.seconds
+    idle_deadline = None
+    last_rx = None
     saw_any = False
     sent_already = False
     pending = ""
     reconnects = 0
 
     def running() -> bool:
-        return deadline is None or time.monotonic() < deadline
+        now_t = time.monotonic()
+        if deadline is not None and now_t >= deadline:
+            return False
+        if idle_deadline is not None and now_t >= idle_deadline:
+            return False
+        return True
 
     def emit(line: str, log) -> None:
         log.write(f"{now()} {line}\n")
@@ -168,6 +193,12 @@ def run(args) -> int:
                         ser.dtr = False
                         ser.rts = False
                     ser.open()
+                    # Discard anything buffered before we attached. The link
+                    # holds received data across port closes and hands it over
+                    # on the next open, so without this a capture can report
+                    # output from a previous session -- including a stale
+                    # firmware version.
+                    ser.reset_input_buffer()
                 except serial.SerialException as ex:
                     if args.no_reconnect:
                         sys.exit(f"could not open {port}: {ex}")
@@ -176,11 +207,10 @@ def run(args) -> int:
 
                 try:
                     with ser:
-                        # Opening the port resets the unit (see the module
-                        # docstring), so anything sent immediately is swallowed
-                        # by the boot that follows. Wait for the "ready>" prompt
-                        # -- or a fallback timeout, since an already-idle unit
-                        # will not emit one unprompted -- before typing.
+                        # Wait for the "ready>" prompt before typing, so a unit
+                        # that happens to be mid-boot does not swallow the
+                        # command. The flushing CR below elicits a prompt from
+                        # an idle unit, which otherwise says nothing unprompted.
                         settle_until = time.monotonic() + args.send_after
                         prompt_seen = False
 
@@ -206,6 +236,9 @@ def run(args) -> int:
                             chunk = ser.read(4096)
                             if chunk:
                                 saw_any = True
+                                last_rx = time.monotonic()
+                                if sent_already and args.send and args.seconds is None:
+                                    idle_deadline = last_rx + args.idle
                                 pending += chunk.decode("utf-8", errors="replace")
                                 *lines, pending = pending.split("\n")
                                 for line in lines:
@@ -217,6 +250,13 @@ def run(args) -> int:
                                 if prompt_seen or time.monotonic() >= settle_until:
                                     send_commands()
                                     sent_already = True
+                                    if args.send and args.seconds is None:
+                                        # Nothing back yet. Do not start the
+                                        # idle countdown until the device has
+                                        # actually said something -- otherwise a
+                                        # slow reset-and-boot looks like silence.
+                                        idle_deadline = (time.monotonic()
+                                                         + args.reply_timeout)
 
                 except serial.SerialException as ex:
                     # The Debug Probe drops off USB and comes back; that should

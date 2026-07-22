@@ -1,4 +1,4 @@
-"""Driving the NPR-H 3.0 bootloader: identify, and flash.
+"""Driving the Localino NPR bootloader: identify, and flash.
 
 The flash sequence is::
 
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from . import protocol
-from .container import BLOCK_SIZE, Firmware
+from .container import BLOCK_SIZE, Container
 from .transport import SerialTransport
 
 #: Called as progress(bytes_done, bytes_total) during a flash.
@@ -72,10 +72,10 @@ class Bootloader:
 
     # -- flashing --------------------------------------------------------
 
-    def flash(self, firmware: Firmware, *,
+    def flash(self, container: Container, *,
               progress: Optional[ProgressFn] = None,
               check_hardware: bool = True) -> DeviceInfo:
-        """Write `firmware` to the application partition.
+        """Write a container's firmware image to the application partition.
 
         Returns the DeviceInfo read before flashing. Raises CommandFailed with
         the device's own status code if any stage is rejected.
@@ -85,26 +85,26 @@ class Bootloader:
         a pointless write.
         """
         info = self.identify()
-        if check_hardware and info.hardware_id != firmware.hardware_id:
-            raise HardwareMismatch(info.hardware_id, firmware.hardware_id)
+        if check_hardware and info.hardware_id != container.hardware_id:
+            raise HardwareMismatch(info.hardware_id, container.hardware_id)
 
-        total = len(firmware.payload)
+        total = len(container.image)
 
         reply = self._exchange(protocol.fw_info(
-            firmware.hardware_id, firmware.version, total, firmware.crc))
+            container.hardware_id, container.version, total, container.crc))
         protocol.parse_status(reply, protocol.Opcode.FW_INFO)
 
         if progress:
             progress(0, total)
         for offset in range(0, total, BLOCK_SIZE):
-            chunk = firmware.payload[offset:offset + BLOCK_SIZE]
+            chunk = container.image[offset:offset + BLOCK_SIZE]
             reply = self._exchange(protocol.fw_data(
-                firmware.hardware_id, firmware.version, offset, chunk))
+                container.hardware_id, container.version, offset, chunk))
             protocol.parse_status(reply, protocol.Opcode.FW_DATA)
             if progress:
                 progress(offset + len(chunk), total)
 
         reply = self._exchange(protocol.fw_finalize(
-            firmware.hardware_id, firmware.version))
+            container.hardware_id, container.version))
         protocol.parse_status(reply, protocol.Opcode.FW_FINALIZE)
         return info

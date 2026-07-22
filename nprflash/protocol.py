@@ -1,4 +1,4 @@
-"""Wire protocol spoken by the NPR-H 3.0 bootloader.
+"""Wire protocol spoken by the Localino NPR bootloader.
 
 Frames are COBS-encoded and terminated by a single ``0x00`` byte. The first
 byte of a decoded payload is the opcode; multi-byte fields are little-endian.
@@ -25,7 +25,7 @@ rejected without touching the installed firmware. It checks the **CRC only at
 FW_FINALIZE**, after every block has been written, so a corrupt image *is*
 written to the application partition before being rejected.
 
-Every constant here is pinned by reference frames in
+Every constant here is confirmed against captured device traffic; see
 tests/fixtures/frames.json.
 """
 

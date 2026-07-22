@@ -19,7 +19,6 @@ classifiers = [
     "Topic :: Communications :: Ham Radio",
 ]
 dependencies = [
-    "cbor2>=5.4",
     "pyserial>=3.5",
 ]
 

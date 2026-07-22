@@ -1,10 +1,10 @@
 """Command-line interface.
 
-    nprflash probe                            identify the attached bootloader
-    nprflash info    <image.nfw>              show container metadata
-    nprflash build   <fw.bin> -v VER -w HW    package a raw binary as .nfw
-    nprflash flash   <image.nfw>              write an image to the device
-    nprflash console                          read the runtime serial console
+    nprflash probe                                   identify the attached bootloader
+    nprflash info    <container.nfw>                 show container metadata
+    nprflash build   <image.bin> -v VER -w HW -o OUT wrap an image as a .nfw container
+    nprflash flash   <container.nfw>                 write a container to the device
+    nprflash console                                 read the runtime serial console
 
 `probe`, `info` and `console` are read-only. `flash` writes.
 """
@@ -19,13 +19,13 @@ import time
 from . import __doc__ as _pkg_doc
 from . import console as _console
 from .bootloader import Bootloader, HardwareMismatch
-from .container import BLOCK_SIZE, ContainerError, Firmware
+from .container import BLOCK_SIZE, Container, ContainerError
 from .protocol import CommandFailed, ProtocolError
 from .transport import SerialTransport, TransportError, find_debug_probes
 
 
 def _progress(done: int, total: int) -> None:
-    """A single rewritten line; no dependency on tqdm."""
+    """A single rewritten line."""
     width = 32
     filled = width * done // total if total else width
     pct = 100 * done // total if total else 100
@@ -34,9 +34,9 @@ def _progress(done: int, total: int) -> None:
           f"{pct:3d}%  {done}/{total} bytes", end=end, flush=True)
 
 
-def _load(path: pathlib.Path) -> Firmware:
+def _load(path: pathlib.Path) -> Container:
     try:
-        return Firmware.parse(path.read_bytes())
+        return Container.parse(path.read_bytes())
     except (OSError, ContainerError) as ex:
         raise SystemExit(f"could not read {path}: {ex}")
 
@@ -51,40 +51,41 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
 
 def cmd_info(args: argparse.Namespace) -> int:
-    fw = _load(args.image)
-    print(fw.describe())
-    if not fw.crc_is_valid():
-        print("\nWARNING: the stored CRC does not match the payload. The device "
-              "will not detect this until FW_FINALIZE, by which point it has "
-              "already written the image.", file=sys.stderr)
+    container = _load(args.container)
+    print(container.describe())
+    if not container.crc_is_valid():
+        print("\nWARNING: the stored checksum does not match the image. The "
+              "device would not detect this until the final commit, by which "
+              "point it has already written everything.", file=sys.stderr)
         return 1
     return 0
 
 
 def cmd_build(args: argparse.Namespace) -> int:
     try:
-        raw = args.input.read_bytes()
+        image = args.image.read_bytes()
     except OSError as ex:
-        raise SystemExit(f"could not read {args.input}: {ex}")
+        raise SystemExit(f"could not read {args.image}: {ex}")
 
-    fw = Firmware.build(raw, version=args.version, hardware_id=args.hardware)
+    container = Container.build(image, version=args.version,
+                                hardware_id=args.hardware)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_bytes(fw.to_bytes())
-    print(fw.describe())
+    args.output.write_bytes(container.to_bytes())
+    print(container.describe())
     print(f"\nwrote {args.output}")
-    if len(raw) != len(fw.payload):
-        print(f"  (payload padded {len(raw)} -> {len(fw.payload)} bytes, "
+    if len(image) != len(container.image):
+        print(f"  (image padded {len(image)} -> {len(container.image)} bytes, "
               f"a whole number of {BLOCK_SIZE}-byte blocks)")
     return 0
 
 
 def cmd_flash(args: argparse.Namespace) -> int:
-    fw = _load(args.image)
-    print(fw.describe())
-    if not fw.crc_is_valid():
-        print("\nrefusing to flash: the container's CRC does not match its "
-              "payload, so the device would reject it at FW_FINALIZE after "
-              "writing the whole image.", file=sys.stderr)
+    container = _load(args.container)
+    print(container.describe())
+    if not container.crc_is_valid():
+        print("\nrefusing to flash: the container's checksum does not match its "
+              "image, so the device would reject it only after writing "
+              "everything.", file=sys.stderr)
         return 1
 
     try:
@@ -99,21 +100,22 @@ def cmd_flash(args: argparse.Namespace) -> int:
         try:
             info = bl.identify()
         except (ProtocolError, TransportError) as ex:
-            print(f"\nBL_INFO failed: {ex}\nRefusing to write.", file=sys.stderr)
+            print(f"\nidentify failed: {ex}\nRefusing to write.", file=sys.stderr)
             return 1
         print(info)
 
-        if info.hardware_id != fw.hardware_id and not args.force:
+        if info.hardware_id != container.hardware_id and not args.force:
             print(f"\nhardware ID mismatch: device reports {info.hardware_id}, "
-                  f"image is built for {fw.hardware_id}.\n"
+                  f"image is built for {container.hardware_id}.\n"
                   "Refusing to flash. Use --force only for a deliberate "
                   "negative test.", file=sys.stderr)
             return 1
 
         if not args.yes:
-            print(f"\nAbout to write {len(fw.payload)} bytes to the application "
-                  "partition. The bootloader region is not addressable by this "
-                  "protocol, and a bad image is recoverable by reflashing.")
+            print(f"\nAbout to write {len(container.image)} bytes to the "
+                  "application partition. The bootloader region is not "
+                  "addressable by this protocol, and a bad image is recoverable "
+                  "by reflashing.")
             try:
                 if input("Type FLASH to continue: ").strip() != "FLASH":
                     return 1
@@ -123,7 +125,7 @@ def cmd_flash(args: argparse.Namespace) -> int:
 
         started = time.monotonic()
         try:
-            bl.flash(fw, progress=_progress, check_hardware=not args.force)
+            bl.flash(container, progress=_progress, check_hardware=not args.force)
         except HardwareMismatch as ex:
             print(f"\n{ex}", file=sys.stderr)
             return 1
@@ -138,16 +140,16 @@ def cmd_flash(args: argparse.Namespace) -> int:
             print(f"\nflash failed: {ex}", file=sys.stderr)
             return 1
 
-    print(f"\nflashed {len(fw.payload)} bytes in "
+    print(f"\nflashed {len(container.image)} bytes in "
           f"{time.monotonic() - started:.1f}s")
     print(f"""
 Power-cycle onto the main supply with the micro-USB DISCONNECTED, then confirm
 the unit is running this image -- an accepted flash is not the same as a
 booting one:
 
-    nprflash console --send version --seconds 20
+    nprflash console --send version
 
-Expect  ->  NPR FW {fw.version}""")
+Expect  ->  NPR FW {container.version}""")
     return 0
 
 
@@ -170,18 +172,19 @@ def build_parser() -> argparse.ArgumentParser:
                              )).set_defaults(func=cmd_probe)
 
     p = sub.add_parser("info", help="show .nfw container metadata")
-    p.add_argument("image", type=pathlib.Path)
+    p.add_argument("container", type=pathlib.Path, help=".nfw container")
     p.set_defaults(func=cmd_info)
 
-    p = sub.add_parser("build", help="package a raw binary as .nfw")
-    p.add_argument("input", type=pathlib.Path, help="raw firmware binary")
+    p = sub.add_parser("build", help="wrap a firmware image as a .nfw container")
+    p.add_argument("image", type=pathlib.Path, help="raw firmware image (.bin)")
     p.add_argument("-v", "--version", type=int, required=True, help="YYMMDDRR")
     p.add_argument("-w", "--hardware", type=int, required=True, help="hardware ID")
-    p.add_argument("-o", "--output", type=pathlib.Path, required=True)
+    p.add_argument("-o", "--output", type=pathlib.Path, required=True,
+                   help="container to write (.nfw)")
     p.set_defaults(func=cmd_build)
 
-    p = with_port(sub.add_parser("flash", help="write an image to the device"))
-    p.add_argument("image", type=pathlib.Path)
+    p = with_port(sub.add_parser("flash", help="write a container to the device"))
+    p.add_argument("container", type=pathlib.Path, help=".nfw container")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--force", action="store_true",
                    help="flash despite a hardware-ID mismatch (negative tests only)")

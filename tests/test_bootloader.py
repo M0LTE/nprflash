@@ -8,7 +8,7 @@ import pytest
 
 from nprflash import protocol
 from nprflash.bootloader import Bootloader, HardwareMismatch
-from nprflash.container import Firmware
+from nprflash.container import Container
 from nprflash.protocol import CommandFailed, Opcode, Status
 
 HW = 240719
@@ -41,7 +41,7 @@ class FakeTransport:
 
 @pytest.fixture
 def firmware():
-    return Firmware.build(b"\xa5" * 3000, version=26072206, hardware_id=HW)
+    return Container.build(b"\xa5" * 3000, version=26072206, hardware_id=HW)
 
 
 def test_identify(firmware):
@@ -70,19 +70,19 @@ def test_flash_covers_the_payload_exactly_once(firmware):
         offsets.append(offset)
         rebuilt += f[13:]
     assert offsets == [i * 1024 for i in range(firmware.block_count)]
-    assert rebuilt == firmware.payload
+    assert rebuilt == firmware.image
 
 
 def test_progress_reports_reach_the_total(firmware):
     seen = []
     Bootloader(FakeTransport()).flash(firmware, progress=lambda d, t: seen.append((d, t)))
-    assert seen[0] == (0, len(firmware.payload))
-    assert seen[-1] == (len(firmware.payload), len(firmware.payload))
+    assert seen[0] == (0, len(firmware.image))
+    assert seen[-1] == (len(firmware.image), len(firmware.image))
     assert [d for d, _ in seen] == sorted(d for d, _ in seen)
 
 
 def test_hardware_mismatch_is_caught_before_any_write():
-    other = Firmware.build(b"\x00" * 1024, version=1, hardware_id=111111)
+    other = Container.build(b"\x00" * 1024, version=1, hardware_id=111111)
     t = FakeTransport()
     with pytest.raises(HardwareMismatch):
         Bootloader(t).flash(other)
@@ -90,7 +90,7 @@ def test_hardware_mismatch_is_caught_before_any_write():
 
 
 def test_force_bypasses_the_hardware_check():
-    other = Firmware.build(b"\x00" * 1024, version=1, hardware_id=111111)
+    other = Container.build(b"\x00" * 1024, version=1, hardware_id=111111)
     t = FakeTransport()
     Bootloader(t).flash(other, check_hardware=False)
     assert Opcode.FW_DATA in t.opcodes

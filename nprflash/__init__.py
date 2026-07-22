@@ -9,12 +9,12 @@ Not affiliated with or endorsed by the manufacturer.
 __version__ = "1.0.0"
 
 from .bootloader import Bootloader, DeviceInfo, HardwareMismatch
-from .container import BLOCK_SIZE, ContainerError, Firmware
+from .container import BLOCK_SIZE, Container, ContainerError
 from .protocol import CommandFailed, Opcode, ProtocolError, Status
 from .transport import SerialTransport, TransportError, autodetect
 
 __all__ = [
-    "BLOCK_SIZE", "Bootloader", "CommandFailed", "ContainerError",
-    "DeviceInfo", "Firmware", "HardwareMismatch", "Opcode", "ProtocolError",
+    "BLOCK_SIZE", "Bootloader", "CommandFailed", "Container", "ContainerError",
+    "DeviceInfo", "HardwareMismatch", "Opcode", "ProtocolError",
     "SerialTransport", "Status", "TransportError", "autodetect", "__version__",
 ]

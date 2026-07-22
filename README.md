@@ -8,11 +8,23 @@ Runs natively on Linux, macOS and Windows.
 
 ## Install
 
+There is nothing to build. The only dependency is `pyserial`, which most
+distributions package, so a clone will run as-is:
+
 ```sh
-pip install -e .
+sudo apt install python3-serial          # or: dnf install python3-pyserial
+git clone https://github.com/M0LTE/nprflash
+cd nprflash
+python3 -m nprflash probe
 ```
 
-Requires Python 3.10+. Dependencies: `cbor2`, `pyserial`.
+If you would rather have `nprflash` on your `$PATH`:
+
+```sh
+pipx install .          # or: pip install -e .
+```
+
+Requires Python 3.10+.
 
 On Linux you need permission for the serial port — usually membership of
 `dialout` (or `uucp` on Arch):
@@ -48,7 +60,7 @@ nprflash flash firmware.nfw
 Reconnect the main supply with the micro-USB detached, and **confirm it booted**:
 
 ```sh
-nprflash console --send version --seconds 20
+nprflash console --send version
 ```
 
 An accepted flash is not the same as a booting one. The bootloader reports
@@ -57,13 +69,26 @@ question, and the console banner is the only thing that answers it.
 
 ## Packaging firmware
 
+Two things are easy to conflate, and the distinction matters:
+
+- a **firmware image** is the raw binary that runs on the MCU (`firmware.bin`);
+- a **container** is the `.nfw` file wrapping that image with the metadata the
+  bootloader checks.
+
+`build` turns the first into the second:
+
 ```sh
 nprflash build -v 26072208 -w 240719 -o firmware.nfw firmware.bin
 nprflash info firmware.nfw
 ```
 
 `-v` is the firmware version (`YYMMDDRR`) and `-w` the hardware ID the image is
-built for. The device rejects an image whose hardware ID does not match its own.
+built for. The device rejects a container whose hardware ID does not match its
+own.
+
+Note the container's version is metadata the bootloader validates — it is not
+the version the running firmware reports, which is compiled into the image.
+Setting them independently is a good way to confuse yourself later.
 
 Give every build a distinct version. It is the only runtime evidence of which
 image is running, and an unchanged version cannot distinguish a successful
@@ -76,9 +101,13 @@ The application's console is USART2 (PD5/PD6) on rear Connector 1, at
 Raspberry Pi Debug Probe. Do not connect an RS-232 level adapter directly.
 
 ```sh
-nprflash console --seconds 60                          # catch a boot banner
-nprflash console --send version --send "display config" --seconds 20
+nprflash console                                  # watch, until Ctrl-C
+nprflash console --send version                   # ask, print, exit
+nprflash console --send version --send "display config"
 ```
+
+With `--send` it finishes once the reply goes quiet, so there is no duration to
+guess. `--seconds` imposes a hard limit if you want one.
 
 Three behaviours are worth knowing, all handled automatically:
 
@@ -87,10 +116,10 @@ Three behaviours are worth knowing, all handled automatically:
 - Input accumulates until a carriage return arrives; a send whose CR is lost
   leaves a fragment that silently prefixes the next command. A flushing CR is
   sent first.
-- Opening the port resets the unit, so commands wait for the `ready>` prompt.
-  **Batch work into one invocation** — `--send` is repeatable. The bootloader
-  only retries an application about ten times before falling back to waiting for
-  USB, and a loop of one-shot commands can exhaust that.
+- Data arriving while nothing holds the port open is buffered and delivered on
+  the next open, so a stale capture can otherwise masquerade as a live one — the
+  input buffer is discarded on connect. For the same reason, a boot banner
+  appearing immediately after connecting is not evidence of a fresh boot.
 
 ## Recovery
 
