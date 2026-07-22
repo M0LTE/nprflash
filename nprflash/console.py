@@ -44,6 +44,7 @@ import argparse
 import datetime
 import glob
 import pathlib
+import re
 import sys
 import time
 
@@ -58,6 +59,23 @@ except ImportError:
 
 RPI_DEBUG_PROBE_VID = 0x2E8A
 RPI_DEBUG_PROBE_PID = 0x000C
+
+#: The bootloader logs to this same console. These phrases mean the application
+#: is NOT running -- the unit has given up on it and is waiting for a firmware
+#: upload, which looks exactly like a dead console if you do not know the
+#: wording.
+BOOTLOADER_WAITING = (
+    "no valid firmware available",
+    "receive firmware via USB",
+    "no firmware received",
+)
+
+#: These mean the unit booted -- and therefore that it reset, since a running
+#: unit does not re-announce itself.
+BOOTLOADER_BOOTING = (
+    "localino-bootloader",
+    "enter application firmware",
+)
 
 NOTHING_RECEIVED_HELP = """Nothing received. Things to check, cheapest first:
   - Is the unit actually powered? The console is silent if it is not.
@@ -106,9 +124,11 @@ def add_arguments(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
     ap.add_argument("--char-delay", type=float, default=0.02, metavar="SEC",
                     help="pause between characters when sending (default 0.02); "
                          "the firmware drops burst-written input")
-    ap.add_argument("--send-after", type=float, default=5.0, metavar="SEC",
+    ap.add_argument("--send-after", type=float, default=30.0, metavar="SEC",
                     help="max wait for the 'ready>' prompt before sending "
-                         "anyway (default 5)")
+                         "anyway. Connecting resets the unit, and reset to "
+                         "prompt takes ~20s, so this is deliberately generous "
+                         "(default 30); the prompt normally arrives first")
     ap.add_argument("--reply-timeout", type=float, default=15.0, metavar="SEC",
                     help="with --send, give up if nothing comes back within "
                          "this long (default 15)")
@@ -119,6 +139,9 @@ def add_arguments(ap: argparse.ArgumentParser) -> argparse.ArgumentParser:
                          "Pi Debug Probe this stops data being forwarded at all")
     ap.add_argument("--no-reconnect", action="store_true",
                     help="abort instead of reopening if the probe re-enumerates")
+    ap.add_argument("--expect", metavar="VERSION",
+                    help="assert the running firmware reports this version; "
+                         "exit non-zero if it reports anything else, or nothing")
     ap.add_argument("--log", default=None, help="log file path")
     return ap
 
@@ -151,6 +174,7 @@ def run(args) -> int:
     idle_deadline = None
     last_rx = None
     saw_any = False
+    seen = {"waiting": False, "booted": False, "version": None}
     sent_already = False
     pending = ""
     reconnects = 0
@@ -167,6 +191,14 @@ def run(args) -> int:
         log.write(f"{now()} {line}\n")
         log.flush()
         print(line, flush=True)
+        lowered = line.lower()
+        if any(m in lowered for m in BOOTLOADER_WAITING):
+            seen["waiting"] = True
+        if any(m in lowered for m in BOOTLOADER_BOOTING):
+            seen["booted"] = True
+        match = re.search(r"firmware:\s*(\d+)", line)
+        if match:
+            seen["version"] = match.group(1)
 
     with open(logpath, "w", encoding="utf-8", errors="replace") as log:
         try:
@@ -283,10 +315,42 @@ def run(args) -> int:
     if reconnects:
         print(f"note: reopened the port {reconnects}x during this capture",
               file=sys.stderr)
+
     if not saw_any:
         print(NOTHING_RECEIVED_HELP, file=sys.stderr)
         return 1
     print(f"logged to {logpath}")
+
+    if seen["waiting"]:
+        print("""
+The unit is in its BOOTLOADER, waiting for a firmware upload -- the application
+is not running, which is why console commands go unanswered.
+
+The bootloader gives up on an application after about ten failed attempts. That
+happens either because the image genuinely does not boot, or because the unit
+was reset that many times: connecting to this console resets it, so a loop of
+one-shot invocations will trip it. Batch commands into one invocation instead.
+
+To recover: power from the micro-USB with the main supply disconnected and
+reflash, or leave it alone -- the bootloader times out of receive mode, reboots
+and retries by itself.""", file=sys.stderr)
+        return 2
+
+    if seen["booted"]:
+        print("note: the unit booted during this session, so something reset it "
+              "-- connecting does. Batch commands into one invocation.",
+              file=sys.stderr)
+
+    if args.expect is not None:
+        if seen["version"] is None:
+            print(f"\nFAIL: expected firmware {args.expect}, but the unit did "
+                  "not report a version at all.", file=sys.stderr)
+            return 1
+        if seen["version"] != str(args.expect):
+            print(f"\nFAIL: expected firmware {args.expect}, unit reports "
+                  f"{seen['version']}. The flash did not take.", file=sys.stderr)
+            return 1
+        print(f"\nOK: unit is running firmware {seen['version']}")
     return 0
 
 
