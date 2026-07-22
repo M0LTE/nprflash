@@ -149,6 +149,9 @@ booting one:
 
     nprflash console --send version
 
+This uses the UART console on Connector 1 (via a Pi Debug Probe or USB-TTL
+adapter), NOT the micro-USB port.
+
 Expect  ->  NPR FW {container.version}""")
     return 0
 

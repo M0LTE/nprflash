@@ -63,6 +63,12 @@ Reconnect the main supply with the micro-USB detached, and **confirm it booted**
 nprflash console --send version
 ```
 
+This talks to the application's UART console on Connector 1 (921600 8N1) via a
+Raspberry Pi Debug Probe or any 3.3 V USB-TTL adapter — it does **not** work
+over the micro-USB port, which only speaks to the bootloader. If you still have
+the micro-USB attached, unplug it; the console is a physically separate
+interface.
+
 An accepted flash is not the same as a booting one. The bootloader reports
 success once it has stored an image; whether that image runs is a separate
 question, and the console banner is the only thing that answers it.
