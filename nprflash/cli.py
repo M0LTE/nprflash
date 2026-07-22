@@ -1,0 +1,214 @@
+"""Command-line interface.
+
+    nprflash probe                            identify the attached bootloader
+    nprflash info    <image.nfw>              show container metadata
+    nprflash build   <fw.bin> -v VER -w HW    package a raw binary as .nfw
+    nprflash flash   <image.nfw>              write an image to the device
+    nprflash console                          read the runtime serial console
+
+`probe`, `info` and `console` are read-only. `flash` writes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import pathlib
+import sys
+import time
+
+from . import __doc__ as _pkg_doc
+from . import console as _console
+from .bootloader import Bootloader, HardwareMismatch
+from .container import BLOCK_SIZE, ContainerError, Firmware
+from .protocol import CommandFailed, ProtocolError
+from .transport import SerialTransport, TransportError, find_debug_probes
+
+
+def _progress(done: int, total: int) -> None:
+    """A single rewritten line; no dependency on tqdm."""
+    width = 32
+    filled = width * done // total if total else width
+    pct = 100 * done // total if total else 100
+    end = "\n" if done >= total else ""
+    print(f"\r  [{'#' * filled}{'.' * (width - filled)}] "
+          f"{pct:3d}%  {done}/{total} bytes", end=end, flush=True)
+
+
+def _load(path: pathlib.Path) -> Firmware:
+    try:
+        return Firmware.parse(path.read_bytes())
+    except (OSError, ContainerError) as ex:
+        raise SystemExit(f"could not read {path}: {ex}")
+
+
+# -- subcommands ----------------------------------------------------------
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    with SerialTransport(args.port, timeout=args.timeout) as t:
+        print(f"port: {t.port}")
+        print(Bootloader(t).identify())
+    return 0
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    fw = _load(args.image)
+    print(fw.describe())
+    if not fw.crc_is_valid():
+        print("\nWARNING: the stored CRC does not match the payload. The device "
+              "will not detect this until FW_FINALIZE, by which point it has "
+              "already written the image.", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    try:
+        raw = args.input.read_bytes()
+    except OSError as ex:
+        raise SystemExit(f"could not read {args.input}: {ex}")
+
+    fw = Firmware.build(raw, version=args.version, hardware_id=args.hardware)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_bytes(fw.to_bytes())
+    print(fw.describe())
+    print(f"\nwrote {args.output}")
+    if len(raw) != len(fw.payload):
+        print(f"  (payload padded {len(raw)} -> {len(fw.payload)} bytes, "
+              f"a whole number of {BLOCK_SIZE}-byte blocks)")
+    return 0
+
+
+def cmd_flash(args: argparse.Namespace) -> int:
+    fw = _load(args.image)
+    print(fw.describe())
+    if not fw.crc_is_valid():
+        print("\nrefusing to flash: the container's CRC does not match its "
+              "payload, so the device would reject it at FW_FINALIZE after "
+              "writing the whole image.", file=sys.stderr)
+        return 1
+
+    try:
+        transport = SerialTransport(args.port, timeout=args.timeout)
+    except TransportError as ex:
+        print(str(ex), file=sys.stderr)
+        return 1
+
+    print(f"port:               {transport.port}")
+    with transport as t:
+        bl = Bootloader(t)
+        try:
+            info = bl.identify()
+        except (ProtocolError, TransportError) as ex:
+            print(f"\nBL_INFO failed: {ex}\nRefusing to write.", file=sys.stderr)
+            return 1
+        print(info)
+
+        if info.hardware_id != fw.hardware_id and not args.force:
+            print(f"\nhardware ID mismatch: device reports {info.hardware_id}, "
+                  f"image is built for {fw.hardware_id}.\n"
+                  "Refusing to flash. Use --force only for a deliberate "
+                  "negative test.", file=sys.stderr)
+            return 1
+
+        if not args.yes:
+            print(f"\nAbout to write {len(fw.payload)} bytes to the application "
+                  "partition. The bootloader region is not addressable by this "
+                  "protocol, and a bad image is recoverable by reflashing.")
+            try:
+                if input("Type FLASH to continue: ").strip() != "FLASH":
+                    return 1
+            except (EOFError, KeyboardInterrupt):
+                print("\naborted", file=sys.stderr)
+                return 1
+
+        started = time.monotonic()
+        try:
+            bl.flash(fw, progress=_progress, check_hardware=not args.force)
+        except HardwareMismatch as ex:
+            print(f"\n{ex}", file=sys.stderr)
+            return 1
+        except CommandFailed as ex:
+            print(f"\n{ex}", file=sys.stderr)
+            if ex.status.name == "CRC_FAIL":
+                print("The image was written before this was detected; the "
+                      "application partition is now dirty and must be "
+                      "reflashed.", file=sys.stderr)
+            return 1
+        except (ProtocolError, TransportError) as ex:
+            print(f"\nflash failed: {ex}", file=sys.stderr)
+            return 1
+
+    print(f"\nflashed {len(fw.payload)} bytes in "
+          f"{time.monotonic() - started:.1f}s")
+    print(f"""
+Power-cycle onto the main supply with the micro-USB DISCONNECTED, then confirm
+the unit is running this image -- an accepted flash is not the same as a
+booting one:
+
+    nprflash console --send version --seconds 20
+
+Expect  ->  NPR FW {fw.version}""")
+    return 0
+
+
+# -- entry point ----------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="nprflash", description=_pkg_doc,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    def with_port(p):
+        p.add_argument("-p", "--port", default=None,
+                       help="serial device; default is to autodetect 0483:5740")
+        p.add_argument("--timeout", type=float, default=5.0,
+                       help="per-reply timeout in seconds (default 5)")
+        return p
+
+    with_port(sub.add_parser("probe", help="identify the attached bootloader"
+                             )).set_defaults(func=cmd_probe)
+
+    p = sub.add_parser("info", help="show .nfw container metadata")
+    p.add_argument("image", type=pathlib.Path)
+    p.set_defaults(func=cmd_info)
+
+    p = sub.add_parser("build", help="package a raw binary as .nfw")
+    p.add_argument("input", type=pathlib.Path, help="raw firmware binary")
+    p.add_argument("-v", "--version", type=int, required=True, help="YYMMDDRR")
+    p.add_argument("-w", "--hardware", type=int, required=True, help="hardware ID")
+    p.add_argument("-o", "--output", type=pathlib.Path, required=True)
+    p.set_defaults(func=cmd_build)
+
+    p = with_port(sub.add_parser("flash", help="write an image to the device"))
+    p.add_argument("image", type=pathlib.Path)
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--force", action="store_true",
+                   help="flash despite a hardware-ID mismatch (negative tests only)")
+    p.set_defaults(func=cmd_flash)
+
+    p = sub.add_parser("console", help="read the runtime serial console",
+                       description=_console.__doc__,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    _console.add_arguments(p)
+    p.set_defaults(func=lambda a: _console.run(a))
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except TransportError as ex:
+        print(str(ex), file=sys.stderr)
+        if find_debug_probes():
+            print("\n(A Debug Probe is attached; it is not a flash target.)",
+                  file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

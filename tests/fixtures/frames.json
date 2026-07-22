@@ -1,0 +1,82 @@
+{
+  "_description": "Reference frames for the NPR-H 3.0 bootloader wire format. Each vector is a complete frame: wire_hex is the COBS-encoded form including the 0x00 delimiter, payload_hex is the decoded content. These pin wire compatibility -- a change that breaks them breaks compatibility with the device.",
+  "vectors": [
+    {
+      "name": "bl_info_request",
+      "direction": "send",
+      "note": "BL_INFO: opcode 7, no payload",
+      "wire_hex": "020700",
+      "payload_hex": "07"
+    },
+    {
+      "name": "bl_info_response",
+      "direction": "recv",
+      "note": "BL_INFO reply: opcode echo + <II hw_id=240719, bl_id=24120501",
+      "wire_hex": "05074fac0305b50c700100",
+      "payload_hex": "074fac0300b50c7001"
+    },
+    {
+      "name": "fw_info_26072206",
+      "direction": "send",
+      "note": "FW_INFO: opcode 2, <III hw=240719 ver=26072206 len=92160, + crc dc030b30",
+      "wire_hex": "05024fac03058ed48d0103680105dc030b3000",
+      "payload_hex": "024fac03008ed48d0100680100dc030b30"
+    },
+    {
+      "name": "fw_finalize_26072206",
+      "direction": "send",
+      "note": "FW_FINALIZE: opcode 6, <II hw, ver",
+      "wire_hex": "05064fac03058ed48d0100",
+      "payload_hex": "064fac03008ed48d01"
+    },
+    {
+      "name": "response_ok",
+      "direction": "recv",
+      "note": "status [0x00, 0x00] = OK",
+      "wire_hex": "01010100",
+      "payload_hex": "0000"
+    },
+    {
+      "name": "fw_info_bad_hwid",
+      "direction": "send",
+      "note": "FW_INFO with hw=111111 (wrong hardware)",
+      "wire_hex": "050207b201058fd48d0103cc01059303550200",
+      "payload_hex": "0207b201008fd48d0100cc010093035502"
+    },
+    {
+      "name": "response_nack",
+      "direction": "recv",
+      "note": "status [0x00, 0x04] = NACK",
+      "wire_hex": "01020400",
+      "payload_hex": "0004"
+    },
+    {
+      "name": "fw_info_bad_crc",
+      "direction": "send",
+      "note": "FW_INFO with corrupted declared crc 6c035502",
+      "wire_hex": "05024fac03058fd48d0103cc01056c03550200",
+      "payload_hex": "024fac03008fd48d0100cc01006c035502"
+    },
+    {
+      "name": "response_crc_fail",
+      "direction": "recv",
+      "note": "status [0x00, 0x03] = CRC_FAIL",
+      "wire_hex": "01020300",
+      "payload_hex": "0003"
+    },
+    {
+      "name": "fw_info_26072207",
+      "direction": "send",
+      "note": "FW_INFO: hw=240719 ver=26072207 len=117760 crc=93035502",
+      "wire_hex": "05024fac03058fd48d0103cc01059303550200",
+      "payload_hex": "024fac03008fd48d0100cc010093035502"
+    },
+    {
+      "name": "fw_finalize_26072207",
+      "direction": "send",
+      "note": "FW_FINALIZE for 26072207",
+      "wire_hex": "05064fac03058fd48d0100",
+      "payload_hex": "064fac03008fd48d01"
+    }
+  ]
+}

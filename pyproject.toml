@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nprflash"
+version = "1.0.0"
+description = "Firmware tooling for the NPR-H 3.0 packet radio modem"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Tom M0LTE", email = "tom@m0lte.uk" }]
+keywords = ["npr", "packet-radio", "amateur-radio", "firmware", "stm32"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Telecommunications Industry",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Ham Radio",
+]
+dependencies = [
+    "cbor2>=5.4",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+nprflash = "nprflash.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nprflash*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
