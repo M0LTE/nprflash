@@ -73,6 +73,40 @@ An accepted flash is not the same as a booting one. The bootloader reports
 success once it has stored an image; whether that image runs is a separate
 question, and the console banner is the only thing that answers it.
 
+## Flashing over Ethernet
+
+If the modem's firmware provides the upload commands, an image can be installed
+across the network with no physical access at all:
+
+```sh
+nprflash netflash firmware.nfw --host 192.168.0.253
+```
+
+**This needs firmware that supports it** — `fwbegin`, `fwd`, `fwend` and
+`slots`. Stock firmware has none of them, and `netflash` will say so and stop.
+Use the USB bootloader path above for those.
+
+Run it from a host on the modem's own LAN segment; its management address is
+not reachable from anywhere else.
+
+The image goes into the modem's spare slot, never over the one it is running.
+The modem then recomputes the CRC over what actually landed in flash and
+refuses the update if it disagrees, so a truncated or corrupted transfer is
+rejected before anything is committed. Only then do the boot flags move, and
+the slots are swapped on the next reset:
+
+```sh
+nprflash netflash firmware.nfw --host 192.168.0.253 --reboot
+```
+
+Two properties worth relying on. If the new image fails to validate, the modem
+keeps booting the old one — a failed update leaves the unit exactly as it was.
+And the image being replaced stays in the spare slot afterwards, so the previous
+firmware is still on the device.
+
+Expect roughly 12 kB/s, so about ten seconds for a typical image, plus a couple
+of seconds of erase during which the modem stops responding.
+
 ## Packaging firmware
 
 Two things are easy to conflate, and the distinction matters:

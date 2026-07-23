@@ -5,8 +5,9 @@
     nprflash build   <image.bin> -v VER -w HW -o OUT wrap an image as a .nfw container
     nprflash flash   <container.nfw>                 write a container to the device
     nprflash console                                 read the runtime serial console
+    nprflash netflash <container.nfw> --host H       install over Ethernet
 
-`probe`, `info` and `console` are read-only. `flash` writes.
+`probe`, `info` and `console` are read-only. `flash` and `netflash` write.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ from . import console as _console
 from .bootloader import Bootloader, HardwareMismatch
 from .container import BLOCK_SIZE, Container, ContainerError
 from .protocol import CommandFailed, ProtocolError
+from .hmi import HMI, HMIError
+from .netflash import NetflashError, install, parse_slots, supported
+from .netflash import __doc__ as _netflash_doc
 from .transport import SerialTransport, TransportError, find_debug_probes
 
 
@@ -158,6 +162,47 @@ Expect  ->  NPR FW {container.version}""")
 
 # -- entry point ----------------------------------------------------------
 
+def cmd_netflash(args: argparse.Namespace) -> int:
+    """Install a container over Ethernet, leaving the running image in place."""
+    container = _load(args.container)
+    print(f"Firmware version:   {container.version}")
+    print(f"Hardware ID:        {container.hardware_id}")
+    print(f"Image size:         {len(container.image)} bytes")
+    print(f"host:               {args.host}")
+
+    try:
+        with HMI(args.host, timeout=args.timeout) as hmi:
+            hmi.banner()
+            if not supported(hmi):
+                print("\nThis modem's firmware does not provide the upload commands.\n"
+                      "Install over the USB bootloader instead:  nprflash flash",
+                      file=sys.stderr)
+                return 1
+
+            before = hmi.command("slots")
+            for slot in parse_slots(before):
+                print(f"  slot{slot['slot']} @{slot['address']:08X} "
+                      f"version {slot['version']} size {slot['size']}")
+
+            if not args.yes:
+                if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+                    return 1
+
+            print("erasing spare slot, this stalls the modem briefly...")
+            install(hmi, container, chunk=args.chunk, progress=_progress)
+            print("verified; the modem will swap slots on the next reset")
+
+            if args.reboot:
+                hmi.command("reboot", timeout=5.0)
+                print("reboot sent")
+            else:
+                print("send 'reboot' when ready to install")
+    except (HMIError, NetflashError) as ex:
+        print(f"\n{ex}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="nprflash", description=_pkg_doc,
@@ -192,6 +237,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true",
                    help="flash despite a hardware-ID mismatch (negative tests only)")
     p.set_defaults(func=cmd_flash)
+
+    p = sub.add_parser("netflash", help="install a container over Ethernet",
+                       description=_netflash_doc,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("container", type=pathlib.Path, help=".nfw container")
+    p.add_argument("--host", required=True, help="modem address, e.g. 192.168.0.253")
+    p.add_argument("--timeout", type=float, default=20.0,
+                   help="per-reply timeout in seconds (default 20)")
+    p.add_argument("--chunk", type=int, default=128,
+                   help="bytes per upload line (default 128)")
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--reboot", action="store_true",
+                   help="reboot immediately so the swap happens now")
+    p.set_defaults(func=cmd_netflash)
 
     p = sub.add_parser("console", help="read the runtime serial console",
                        description=_console.__doc__,
