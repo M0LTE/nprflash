@@ -189,7 +189,17 @@ def cmd_netflash(args: argparse.Namespace) -> int:
                     return 1
 
             print("erasing spare slot, this stalls the modem briefly...")
-            install(hmi, container, chunk=args.chunk, progress=_progress)
+            # A full image is several hundred chunks; redrawing per chunk floods
+            # any log that does not honour carriage returns, so throttle it.
+            total = len(container.image)
+            step = max(args.chunk, total // 64)
+
+            def throttled(done: int, size: int, _last=[0]) -> None:
+                if done - _last[0] >= step or done >= size:
+                    _last[0] = done
+                    _progress(done, size)
+
+            install(hmi, container, chunk=args.chunk, progress=throttled)
             print("verified; the modem will swap slots on the next reset")
 
             if args.reboot:
