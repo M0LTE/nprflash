@@ -189,7 +189,7 @@ def cmd_netflash(args: argparse.Namespace) -> int:
                 if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
                     return 1
 
-            print("erasing spare slot, this stalls the modem briefly...")
+            print("uploading; the modem stalls briefly on the first chunk to erase")
             # A full image is several hundred chunks; redrawing per chunk floods
             # any log that does not honour carriage returns, so throttle it.
             total = len(container.image)

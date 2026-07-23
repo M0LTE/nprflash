@@ -84,7 +84,9 @@ def install(hmi: HMI, container: Container, *,
     sent = 0
     for offset in range(0, total, chunk):
         piece = image[offset:offset + chunk]
-        reply = hmi.command("fwd " + piece.hex())
+        # The first chunk carries the erase, so allow it the longer timeout.
+        reply = hmi.command("fwd " + piece.hex(),
+                            timeout=erase_timeout if offset == 0 else None)
         expected = sent + len(piece)
         if not _expect_progress(reply, expected):
             raise NetflashError(
