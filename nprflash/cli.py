@@ -172,7 +172,8 @@ def cmd_netflash(args: argparse.Namespace) -> int:
 
     try:
         with HMI(args.host, timeout=args.timeout) as hmi:
-            hmi.banner()
+            if hmi.authenticate(hmi.banner(), args.password):
+                print("authenticated")
             if not supported(hmi):
                 print("\nThis modem's firmware does not provide the upload commands.\n"
                       "Install over the USB bootloader instead:  nprflash flash",
@@ -257,6 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="per-reply timeout in seconds (default 20)")
     p.add_argument("--chunk", type=int, default=128,
                    help="bytes per upload line (default 128)")
+    p.add_argument("--password", default=None,
+                   help="passphrase, if the modem's HMI requires one")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--reboot", action="store_true",
                    help="reboot immediately so the swap happens now")

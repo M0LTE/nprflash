@@ -156,3 +156,93 @@ def test_supported_detects_stock_firmware():
 
     assert supported(FakeHMI()) is True
     assert supported(Stock()) is False
+
+
+# -- challenge and response ----------------------------------------------
+
+import hashlib
+
+from nprflash.hmi import CHALLENGE, HMI, HMIError
+
+
+class AuthHMI(FakeHMI):
+    """Enough of HMI to exercise authenticate() without a socket."""
+
+    NONCE = bytes(range(16))
+
+    def __init__(self, password="correct horse", **kw):
+        super().__init__(**kw)
+        self.secret = hashlib.sha256(password.encode()).digest()
+        self.authed = False
+
+    def banner_text(self):
+        return f"NPR modem\nauth required\nchallenge {self.NONCE.hex().upper()}\nready> "
+
+    def command(self, text, timeout=None):
+        if text.startswith("auth "):
+            want = hashlib.sha256(self.NONCE + self.secret).hexdigest()
+            if text.split()[1].lower() == want:
+                self.authed = True
+                return "authenticated\nready> "
+            return "auth failed\nready> "
+        return super().command(text, timeout)
+
+
+def test_challenge_regex_reads_the_nonce():
+    m = CHALLENGE.search("auth required\nchallenge 000102030405060708090A0B0C0D0E0F\nready> ")
+    assert m and bytes.fromhex(m.group(1)) == bytes(range(16))
+
+
+def test_authenticate_answers_with_hash_of_nonce_and_secret():
+    modem = AuthHMI()
+    assert HMI.authenticate(modem, modem.banner_text(), "correct horse") is True
+    assert modem.authed
+
+
+def test_authenticate_is_a_no_op_when_no_challenge_offered():
+    modem = AuthHMI()
+    assert HMI.authenticate(modem, "NPR modem\nready> ", None) is False
+
+
+def test_authenticate_rejects_wrong_password():
+    modem = AuthHMI()
+    with pytest.raises(HMIError, match="rejected"):
+        HMI.authenticate(modem, modem.banner_text(), "wrong")
+
+
+def test_authenticate_demands_a_password_when_challenged():
+    modem = AuthHMI()
+    with pytest.raises(HMIError, match="requires a password"):
+        HMI.authenticate(modem, modem.banner_text(), None)
+
+
+def test_passphrase_itself_never_appears_on_the_wire():
+    modem = AuthHMI()
+    HMI.authenticate(modem, modem.banner_text(), "correct horse")
+    assert not any("correct horse" in c for c in modem.commands)
+
+
+def test_authenticate_finds_a_challenge_sent_after_the_banner_prompt():
+    """Firmware may prompt first and challenge second."""
+
+    class LateChallenge(AuthHMI):
+        def read_reply(self, timeout=None):
+            return f"auth required\nchallenge {self.NONCE.hex().upper()}\nready> "
+
+    modem = LateChallenge()
+    assert HMI.authenticate(modem, "NPR modem\nready> ", "correct horse") is True
+    assert modem.authed
+
+
+def test_late_challenge_is_not_probed_without_a_password():
+    """An open modem must not be made to wait for a challenge that never comes."""
+
+    class Tracking(AuthHMI):
+        probed = False
+
+        def read_reply(self, timeout=None):
+            Tracking.probed = True
+            return ""
+
+    assert HMI.authenticate(Tracking(), "NPR modem\nready> ", None) is False
+    assert Tracking.probed is False

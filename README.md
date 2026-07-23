@@ -89,6 +89,11 @@ Use the USB bootloader path above for those.
 Run it from a host on the modem's own LAN segment; its management address is
 not reachable from anywhere else.
 
+If the modem's HMI is password-protected, pass `--password`. The passphrase is
+not sent: the modem issues a random challenge and the tool answers with
+`SHA-256(challenge || SHA-256(passphrase))`, so a listener learns nothing
+reusable and the exchange differs on every connection.
+
 The image goes into the modem's spare slot, never over the one it is running.
 The modem then recomputes the CRC over what actually landed in flash and
 refuses the update if it disagrees, so a truncated or corrupted transfer is

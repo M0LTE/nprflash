@@ -10,10 +10,15 @@ Only reachable from a host on the modem's own LAN segment.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import socket
 import time
 
 PROMPT = b"ready> "
+
+#: Emitted by firmware that wants a challenge response before it will do anything.
+CHALLENGE = re.compile(r"challenge ([0-9A-Fa-f]{32})")
 
 IAC = 0xFF
 _NEGOTIATE = (0xFB, 0xFC, 0xFD, 0xFE)  # WILL, WONT, DO, DONT
@@ -92,6 +97,35 @@ class HMI:
 
     def banner(self, timeout: float = 6.0) -> str:
         return self.read_reply(timeout)
+
+    def authenticate(self, banner_text: str, password: str | None) -> bool:
+        """Answer a challenge if the modem issued one.
+
+        Returns True if authentication happened. The passphrase itself is never
+        sent: the modem stores SHA-256 of it and checks
+        SHA-256(nonce || that), so a listener learns nothing reusable, and each
+        connection uses a fresh nonce.
+        """
+        match = CHALLENGE.search(banner_text)
+        if not match and password:
+            # Some firmware prompts in the banner and sends the challenge as a
+            # second message, which a read that stops at the first prompt never
+            # sees. Only look when a password was offered, so an open modem is
+            # not delayed.
+            match = CHALLENGE.search(self.read_reply(2.0))
+        if not match:
+            return False  # firmware is not asking
+        if not password:
+            raise HMIError(
+                "this modem requires a password; pass --password")
+
+        nonce = bytes.fromhex(match.group(1))
+        secret = hashlib.sha256(password.encode()).digest()
+        response = hashlib.sha256(nonce + secret).hexdigest()
+        reply = self.command(f"auth {response}")
+        if "authenticated" not in reply:
+            raise HMIError(f"authentication rejected: {reply.strip()}")
+        return True
 
     def close(self) -> None:
         try:
