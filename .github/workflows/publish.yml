@@ -1,0 +1,251 @@
+name: publish
+
+# A `v*` tag ships one artefact: a Debian package, attached to a GitHub Release and picked up by
+# the packet-net apt repository. nprflash is pure Python and there is nothing to cross-compile, so
+# unlike the sibling tait-codeplug there is no per-architecture matrix here: a single
+# Architecture: all package installs on amd64, arm64 and armhf alike and runs on the system
+# interpreter. That is also why the .deb is ~20 kB rather than ~40 MB.
+#
+# The price of using the system interpreter is a floor on it: the package Depends on
+# python3 (>= 3.10), so Debian bullseye and Ubuntu 20.04 (Python 3.9) will refuse to install it,
+# naming the version they have. That is a correct refusal rather than a crash on first import.
+#
+# Not done here, and a natural addition if it is ever wanted: pushing the same version to PyPI.
+# The gate below already builds and tests exactly what would be pushed.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without the v prefix, e.g. 1.0.0'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Job level, not step level: a secret put in a step's own `env:` is not visible to that
+    # step's `if:`, so the "is the token there?" test below has to read it from here.
+    env:
+      APT_DISPATCH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+    permissions:
+      contents: write   # gh release create
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the release notes fall back to commit subjects since the previous tag
+          # when CHANGELOG.md has no section for this version.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          # The floor the package depends on, so the gate runs on the oldest interpreter any
+          # installed copy will meet rather than on whatever the runner image happens to ship.
+          # The tests workflow covers 3.10, 3.11 and 3.12 on every push; this is the release gate.
+          python-version: '3.10'
+
+      - id: v
+        name: Resolve version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gate - install + test
+        # A build that fails its own tests must never reach the Release. Installing the package
+        # rather than running the tests from the source tree also proves the packaging metadata
+        # in pyproject.toml is not broken, which is what the .deb is built from.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pytest -q
+
+      - name: Build the .deb
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Pin the changelog date to the commit being built so a rebuild of a tag is
+          # byte-identical. %ct is always a Unix timestamp, unlike the event payload's
+          # pushed_at, which is an integer for push events and an ISO string elsewhere.
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          rm -rf release && mkdir -p release
+          # build-deb.sh refuses if this version disagrees with pyproject.toml or
+          # nprflash/__init__.py, which is the whole version-drift check: it fires here, before
+          # anything has been published, and it fires identically for a build run by hand.
+          packaging/build-deb.sh "${VERSION}" ./release
+          ls -l release/
+
+      - name: Verify the .deb
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          deb="release/nprflash_${VERSION}_all.deb"
+          dpkg-deb --info "$deb"
+          # Capture the listing once and match it in memory. Piping dpkg-deb straight into
+          # `grep -q` makes grep close the pipe the moment it matches, and the SIGPIPE
+          # dpkg-deb takes for that becomes a pipeline failure under pipefail.
+          listing="$(dpkg-deb --contents "$deb")"
+          echo "$listing"
+          # The launcher: our own #!/usr/bin/python3 two-liner, executable. Never the console
+          # script setuptools generates, which bakes the build machine's interpreter path into
+          # the shebang and so would be broken on every machine that installs the package.
+          grep -qE '^-rwxr-xr-x .* \./usr/bin/nprflash$' <<<"$listing"
+          # The package tree, in Debian's location for system Python packages.
+          grep -q './usr/lib/python3/dist-packages/nprflash/__init__\.py$' <<<"$listing"
+          grep -q './usr/lib/python3/dist-packages/nprflash/cli\.py$' <<<"$listing"
+          # No bytecode. A .pyc compiled by the runner's interpreter is useless to a target
+          # running a different Python, and the leftover __pycache__ directory is what makes an
+          # uninstall leave a tree behind. The package's postinst compiles on the target instead.
+          if grep -qE '__pycache__|\.pyc$' <<<"$listing"; then
+            echo "::error::the package contains bytecode; build-deb.sh should not have shipped it"
+            exit 1
+          fi
+          # Debian requires a copyright file, and this one carries the GPL notice.
+          grep -q 'usr/share/doc/nprflash/copyright$' <<<"$listing"
+          grep -q 'usr/share/doc/nprflash/changelog\.Debian\.gz$' <<<"$listing"
+          # Architecture: all is the point of the whole approach - one package for every arch.
+          # If a build ever starts stamping the runner's arch in here, apt would offer this
+          # package to amd64 machines only and the Pis would silently stop seeing updates.
+          arch="$(dpkg-deb -f "$deb" Architecture)"
+          [ "$arch" = "all" ] || { echo "::error::Architecture is '$arch', expected 'all'"; exit 1; }
+          # The system interpreter and Debian's pyserial, which is the entire runtime story.
+          depends="$(dpkg-deb -f "$deb" Depends)"
+          echo "Depends: $depends"
+          grep -q 'python3-serial' <<<"$depends" || { echo "::error::python3-serial is missing from Depends"; exit 1; }
+          # xz, not the host dpkg's zstd default: dpkg older than 1.21.18 (bullseye, and so
+          # Raspberry Pi OS bullseye) cannot read a zstd archive at all, and fails with an
+          # unreadable-archive error that looks like a corrupt download rather than the honest
+          # "your Python is too old" this package should give there. `ar t` is what shows this -
+          # dpkg-deb --info does not name the members, so the obvious check passes on zstd.
+          members="$(ar t "$deb")"
+          grep -qx 'data.tar.xz' <<<"$members" || {
+            echo "::error::$(basename "$deb") is not xz-compressed ($members); old dpkg would refuse to read it"
+            exit 1
+          }
+
+      - name: Checksums + create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum nprflash_"${VERSION}"_all.deb > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+          # Release notes = what changed in this version, then how to install it. The changes come
+          # from CHANGELOG.md; if that has no section for this version (someone forgot), fall back to
+          # the commit subjects since the previous tag so a release never ships an empty list.
+          awk -v ver="${VERSION}" '
+            substr($0, 1, 3) == "## " {
+              if (inside) { exit }
+              split(substr($0, 4), header, " ")
+              if (header[1] == ver) { inside = 1 }
+              next
+            }
+            inside { print }
+          ' CHANGELOG.md > release/CHANGES.md
+
+          if [ ! -s release/CHANGES.md ]; then
+            echo "::warning::CHANGELOG.md has no section for ${VERSION}; using commit subjects instead."
+            # HEAD, not v${VERSION}: on a workflow_dispatch run the tag does not exist yet - the
+            # `gh release create` below is what creates it - so naming it here exits 128 and takes
+            # the whole release step with it.
+            previous=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+            if [ -n "${previous}" ]; then
+              git log --format='- %s' "${previous}..HEAD" > release/CHANGES.md
+            else
+              git log --format='- %s' -20 HEAD > release/CHANGES.md
+            fi
+          fi
+
+          {
+            echo "## What's changed in ${VERSION}"
+            echo
+            cat release/CHANGES.md
+            echo
+            echo "---"
+            echo
+            sed "s/__VER__/${VERSION}/g; s#__REPO__#${REPO}#g" .github/release-notes.md
+          } > release/NOTES.md
+          cat release/NOTES.md
+          # Create the release empty, attach the assets one at a time, then publish it.
+          #
+          # The draft is deliberate rather than tidiness: packet-net/apt indexes whatever
+          # `releases/latest` carries, and `releases/latest` ignores drafts. Publishing the release
+          # before its .deb is attached would briefly advertise a version whose package is missing,
+          # and an apt rebuild landing in that window would index it.
+          #
+          # The retry loop is inherited from tait-codeplug, where a single `gh release create` with
+          # ten assets on it failed twice with `HTTP 500: Error saving asset` from
+          # uploads.github.com, taking a whole release with it. This repo's one asset is 20 kB, so
+          # the retry matters far less - it is here so that both repos have the same shape and
+          # there is one pattern to maintain rather than two.
+          if gh release view "v${VERSION}" --repo "${REPO}" >/dev/null 2>&1; then
+            echo "release v${VERSION} already exists; refreshing its notes and assets."
+            gh release edit "v${VERSION}" --repo "${REPO}" \
+              --title "nprflash ${VERSION}" --notes-file release/NOTES.md
+          else
+            gh release create "v${VERSION}" --repo "${REPO}" --draft \
+              --title "nprflash ${VERSION}" --notes-file release/NOTES.md
+          fi
+
+          # --clobber so a re-run repairs a partial upload rather than starting again, which is the
+          # state a failure here leaves behind.
+          for asset in release/nprflash_"${VERSION}"_all.deb release/SHA256SUMS; do
+            name="$(basename "$asset")"
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "v${VERSION}" "$asset" --repo "${REPO}" --clobber; then
+                echo "uploaded $name"
+                break
+              fi
+              if [ "$attempt" = 5 ]; then
+                echo "::error::could not upload $name after 5 attempts"
+                exit 1
+              fi
+              echo "::warning::upload of $name failed (attempt $attempt of 5); retrying"
+              sleep "$((attempt * 10))"
+            done
+          done
+
+          # Everything is attached, so it can go live and be seen by releases/latest.
+          gh release edit "v${VERSION}" --repo "${REPO}" --draft=false
+
+      - name: Tell the apt repo to rebuild
+        # Last, and only after the release has been published: packet-net/apt indexes whatever
+        # is on `releases/latest` when it runs, so dispatching before the assets exist would
+        # just make it re-index the previous release.
+        if: env.APT_DISPATCH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          # Fire and forget: packet-net/apt rebuilds its whole index from every source repo's
+          # latest release, so the payload is only there for the run log. A failure here must
+          # not fail a release that has already shipped - the hourly cron picks it up.
+          #
+          # gh api --input - with a JSON body, not -f client_payload[...]=...: gh's -f does not
+          # do curl-style bracket nesting, so the nested object has to arrive as JSON.
+          payload=$(printf '{"event_type":"release-published","client_payload":{"repo":"%s","tag":"v%s"}}' \
+            "$GITHUB_REPOSITORY" "$VERSION")
+          if printf '%s' "$payload" | gh api -X POST repos/packet-net/apt/dispatches --input -; then
+            echo "apt repo rebuild triggered."
+          else
+            echo "::warning::could not trigger the packet-net/apt rebuild; its hourly cron will pick this release up."
+          fi
+
+      - name: Warn if APT_DISPATCH_TOKEN missing
+        # Not a failure. The apt repo's cron is the fallback, so a release without the secret
+        # still reaches apt, just later.
+        if: env.APT_DISPATCH_TOKEN == ''
+        run: echo "::warning::APT_DISPATCH_TOKEN is not visible to this repo - the apt repo was not poked. It will pick this release up within the hour."

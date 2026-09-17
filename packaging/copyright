@@ -1,0 +1,33 @@
+nprflash - firmware tooling for the NPR-H 3.0 packet radio modem
+https://github.com/M0LTE/nprflash
+
+Copyright (C) 2026 Tom Fanning M0LTE <tom@m0lte.uk>
+
+This package ships the nprflash Python package and a launcher that runs it on
+the system interpreter.  No interpreter and no third-party library is bundled.
+
+LICENCE
+-------
+
+nprflash is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+On Debian systems the full text of the GNU General Public License version 3 can
+be found in /usr/share/common-licenses/GPL-3.
+
+DEPENDENCIES
+------------
+
+The one runtime dependency, pyserial (Copyright (C) Chris Liechti, BSD-3-Clause
+licence), is depended on rather than bundled: it arrives as the distribution's
+own python3-serial package and carries its own copyright file at
+/usr/share/doc/python3-serial/copyright.  Nothing in this package is a copy of
+it.
+
+Not affiliated with or endorsed by the manufacturer of the NPR-H 3.0.

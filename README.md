@@ -8,30 +8,42 @@ Runs natively on Linux, macOS and Windows.
 
 ## Install
 
-There is nothing to build. The only dependency is `pyserial`, which most
-distributions package, so a clone will run as-is:
+Requires Python 3.10 or newer. The only dependency is `pyserial`.
+
+### Debian, Ubuntu and Raspberry Pi OS: apt
+
+The recommended route, because `apt upgrade` then keeps it current along with everything else:
 
 ```sh
-sudo apt install python3-serial          # or: dnf install python3-pyserial
-git clone https://github.com/M0LTE/nprflash
-cd nprflash
-python3 -m nprflash probe
+curl -fsSL https://packet-net.github.io/apt/pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/packet-net.gpg
+echo "deb [signed-by=/usr/share/keyrings/packet-net.gpg] https://packet-net.github.io/apt ./" | sudo tee /etc/apt/sources.list.d/packet-net.list
+sudo apt update
+sudo apt install nprflash
 ```
 
-If you would rather have `nprflash` on your `$PATH`:
+One package covers `amd64`, `arm64` and `armhf`: nprflash is pure Python and runs on the Python already on the machine, so there is nothing architecture-specific in it and pyserial arrives as the distribution's own `python3-serial`. The same [packet-net apt repository](https://github.com/packet-net/apt) carries the rest of the Packet.NET packages, so the lines above are worth having anyway.
+
+Debian 12 (bookworm), Ubuntu 22.04, Raspberry Pi OS bookworm and later. Older releases ship Python 3.9, so apt will decline the package there and say which Python it found; use pip below instead. The `.deb` is attached to each [release](https://github.com/M0LTE/nprflash/releases/latest) as well, for installing one by hand with `sudo apt install ./nprflash_<version>_all.deb`.
+
+### Everything else: pip
+
+Works the same on Linux, macOS and Windows:
 
 ```sh
-pipx install .          # or: pip install -e .
+pipx install git+https://github.com/M0LTE/nprflash     # or: pip install git+https://...
+nprflash --help
 ```
 
-Requires Python 3.10+.
+`pipx` puts it in its own environment, which is what a recent distribution's Python will insist on anyway. From a clone it is `pipx install .` or `pip install -e .`, and `python3 -m nprflash probe` runs it straight out of the checkout with only `python3-serial` installed.
 
-On Linux you need permission for the serial port — usually membership of
-`dialout` (or `uucp` on Arch):
+### Serial port permission
+
+On Linux you need permission for the serial port, which is usually membership of `dialout` (or `uucp` on Arch):
 
 ```sh
 sudo usermod -aG dialout "$USER"    # log out and back in
 ```
+
 
 ## Power states matter
 
