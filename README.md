@@ -8,26 +8,37 @@ Runs natively on Linux, macOS and Windows.
 
 ## Install
 
-There is nothing to build. The only dependency is `pyserial`, which most
-distributions package, so a clone will run as-is:
+Requires Python 3.10 or newer. The only dependency is `pyserial`.
+
+### Debian, Ubuntu and Raspberry Pi OS: apt
+
+The recommended route, because `apt upgrade` then keeps it current along with everything else:
 
 ```sh
-sudo apt install python3-serial          # or: dnf install python3-pyserial
-git clone https://github.com/M0LTE/nprflash
-cd nprflash
-python3 -m nprflash probe
+curl -fsSL https://packet-net.github.io/apt/pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/packet-net.gpg
+echo "deb [signed-by=/usr/share/keyrings/packet-net.gpg] https://packet-net.github.io/apt ./" | sudo tee /etc/apt/sources.list.d/packet-net.list
+sudo apt update
+sudo apt install nprflash
 ```
 
-If you would rather have `nprflash` on your `$PATH`:
+One package covers `amd64`, `arm64` and `armhf`: nprflash is pure Python and runs on the Python already on the machine, so there is nothing architecture-specific in it and pyserial arrives as the distribution's own `python3-serial`. The same [packet-net apt repository](https://github.com/packet-net/apt) carries the rest of the Packet.NET packages, so the lines above are worth having anyway.
+
+Debian 12 (bookworm), Ubuntu 22.04, Raspberry Pi OS bookworm and later. Older releases ship Python 3.9, so apt will decline the package there and say which Python it found; use pip below instead. The `.deb` is attached to each [release](https://github.com/M0LTE/nprflash/releases/latest) as well, for installing one by hand with `sudo apt install ./nprflash_<version>_all.deb`.
+
+### Everything else: pip
+
+Works the same on Linux, macOS and Windows:
 
 ```sh
-pipx install .          # or: pip install -e .
+pipx install git+https://github.com/M0LTE/nprflash     # or: pip install git+https://...
+nprflash --help
 ```
 
-Requires Python 3.10+.
+`pipx` puts it in its own environment, which is what a recent distribution's Python will insist on anyway. From a clone it is `pipx install .` or `pip install -e .`, and `python3 -m nprflash probe` runs it straight out of the checkout with only `python3-serial` installed.
 
-On Linux you need permission for the serial port — usually membership of
-`dialout` (or `uucp` on Arch):
+### Serial port permission
+
+On Linux you need permission for the serial port, which is usually membership of `dialout` (or `uucp` on Arch):
 
 ```sh
 sudo usermod -aG dialout "$USER"    # log out and back in
@@ -40,8 +51,8 @@ it is powered:
 
 | Powered by | What runs | What you get |
 |---|---|---|
-| micro-USB, main supply **disconnected** | bootloader | USB serial port `0483:5740` — `probe`, `flash` |
-| main supply, micro-USB **disconnected** | application | USART2 console on Connector 1 — `console` |
+| micro-USB, main supply **disconnected** | bootloader | USB serial port `0483:5740`: `probe`, `flash` |
+| main supply, micro-USB **disconnected** | application | USART2 console on Connector 1: `console` |
 
 So a silent console is normal while USB-powered, and a missing serial port is
 normal while running on the main supply. Check which supply is connected before
@@ -49,8 +60,8 @@ concluding anything is broken.
 
 ## Flashing
 
-Put the unit in its bootloader — power from the micro-USB with the main supply
-disconnected — then:
+Put the unit in its bootloader, powered from the micro-USB with the main
+supply disconnected, then:
 
 ```sh
 nprflash probe                       # identify: hardware ID, bootloader version
@@ -64,7 +75,7 @@ nprflash console --send version
 ```
 
 This talks to the application's UART console on Connector 1 (921600 8N1) via a
-Raspberry Pi Debug Probe or any 3.3 V USB-TTL adapter — it does **not** work
+Raspberry Pi Debug Probe or any 3.3 V USB-TTL adapter. It does **not** work
 over the micro-USB port, which only speaks to the bootloader. If you still have
 the micro-USB attached, unplug it; the console is a physically separate
 interface.
@@ -82,7 +93,7 @@ across the network with no physical access at all:
 nprflash netflash firmware.nfw --host 192.168.0.253
 ```
 
-**This needs firmware that supports it** — `fwbegin`, `fwd`, `fwend` and
+**This needs firmware that supports it**: `fwbegin`, `fwd`, `fwend` and
 `slots`. Stock firmware has none of them, and `netflash` will say so and stop.
 Use the USB bootloader path above for those.
 
@@ -105,7 +116,7 @@ nprflash netflash firmware.nfw --host 192.168.0.253 --reboot
 ```
 
 Two properties worth relying on. If the new image fails to validate, the modem
-keeps booting the old one — a failed update leaves the unit exactly as it was.
+keeps booting the old one; a failed update leaves the unit exactly as it was.
 And the image being replaced stays in the spare slot afterwards, so the previous
 firmware is still on the device.
 
@@ -131,7 +142,7 @@ nprflash info firmware.nfw
 built for. The device rejects a container whose hardware ID does not match its
 own.
 
-Note the container's version is metadata the bootloader validates — it is not
+Note the container's version is metadata the bootloader validates; it is not
 the version the running firmware reports, which is compiled into the image.
 Setting them independently is a good way to confuse yourself later.
 
@@ -162,7 +173,7 @@ Three behaviours are worth knowing, all handled automatically:
   leaves a fragment that silently prefixes the next command. A flushing CR is
   sent first.
 - Data arriving while nothing holds the port open is buffered and delivered on
-  the next open, so a stale capture can otherwise masquerade as a live one — the
+  the next open, so a stale capture can otherwise masquerade as a live one, so the
   input buffer is discarded on connect. For the same reason, a boot banner
   appearing immediately after connecting is not evidence of a fresh boot.
 

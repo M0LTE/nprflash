@@ -54,7 +54,7 @@ def _expect_progress(reply: str, expected: int) -> bool:
     """Confirm the modem reported the new byte count.
 
     The reply echoes back the hex just sent, so scanning it for words like
-    "bad" or "fail" gives false positives — hex readily contains them, e.g.
+    "bad" or "fail" gives false positives; hex readily contains them, e.g.
     ``...6badf81420...``. The reported count is the reliable signal.
     """
     return any(line.strip() == str(expected) for line in reply.splitlines())
